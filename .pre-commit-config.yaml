@@ -1,0 +1,19 @@
+# Установка (один раз на клон):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Ручной запуск по всем файлам:
+#   pre-commit run --all-files
+
+repos:
+  # 1. Ruff: линтер + форматтер (использует твой pyproject.toml)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        name: ruff check
+        args: [--fix]
+        files: ^(app|tests)/.*\.py$
+      - id: ruff-format
+        name: ruff format
+        files: ^(app|tests)/.*\.py$
