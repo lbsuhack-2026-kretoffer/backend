@@ -1,169 +1,172 @@
-from datetime import date, timedelta
+from datetime import timedelta
 
-from app import models
-from app.database import get_db
-from app.deps import ensure_school_access, require_roles
-from app.schemas import (
-    CanteenCategoryInput,
-    CanteenCategoryOut,
-    CanteenCategoryPatch,
-    CanteenForecastOut,
-    CanteenSalesDay,
+from fastapi import APIRouter, HTTPException
+
+from ..deps import DB, CurrentUser, ensure_school_access
+from ..models import (
+    CanteenCategory,
+    CanteenSale,
+    School,
 )
-from app.services.forecast import compute_canteen_forecast
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from ..schemas import CanteenCategoryInput, CanteenCategoryPatch
+from ..utils import parse_date, today_tz
+from .forecast import _build_forecast
 
 router = APIRouter(tags=["canteen"])
 
 
-@router.get("/schools/{school_id}/canteen/forecast", response_model=CanteenForecastOut)
-def get_canteen_forecast(
-    school_id: str,
-    date: date,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
+@router.get("/schools/{school_id}/canteen/categories")
+def list_categories(school_id: str, db: DB, user: CurrentUser):
     ensure_school_access(user, school_id)
-    school = db.get(models.School, school_id)
-    if not school:
-        raise HTTPException(404, "Школа не найдена")
-    if school.meal_plan != "canteen":
-        raise HTTPException(400, "Прогноз по категориям доступен только для схемы «шведский стол»")
-    return compute_canteen_forecast(db, school, date)
-
-
-@router.get("/schools/{school_id}/canteen/sales", response_model=list[CanteenSalesDay])
-def canteen_sales(
-    school_id: str,
-    days: int = Query(14, ge=1, le=90),
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
-    ensure_school_access(user, school_id)
-    since = date.today() - timedelta(days=days)
-    sales = (
-        db.query(models.CanteenSale)
-        .filter(models.CanteenSale.school_id == school_id, models.CanteenSale.date >= since)
-        .order_by(models.CanteenSale.date.asc())
-        .all()
-    )
-
-    by_date = {}
-    for s in sales:
-        cat = db.get(models.CanteenCategory, s.category_id)
-        day = by_date.setdefault(
-            s.date,
-            {"date": s.date, "total_qty": 0, "revenue": 0.0, "waste_qty": 0, "by_category": []},
-        )
-        day["total_qty"] += s.qty
-        day["revenue"] += s.revenue
-        day["waste_qty"] += s.waste_qty
-        day["by_category"].append(
-            {
-                "id": s.category_id,
-                "name": cat.name if cat else "",
-                "qty": s.qty,
-                "revenue": s.revenue,
-                "waste_qty": s.waste_qty,
-            }
-        )
-
-    return [by_date[d] for d in sorted(by_date.keys())]
-
-
-@router.get("/schools/{school_id}/canteen/categories", response_model=list[CanteenCategoryOut])
-def list_categories(
-    school_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
-    ensure_school_access(user, school_id)
+    items = db.query(CanteenCategory).filter(CanteenCategory.school_id == school_id).all()
     return [
         {
             "id": c.id,
-            "school_id": c.school_id,
+            "schoolId": c.school_id,
             "name": c.name,
             "share": c.share,
-            "avg_price": c.avg_price,
+            "avgPrice": c.avg_price,
             "unit": c.unit,
         }
-        for c in db.query(models.CanteenCategory).filter_by(school_id=school_id).all()
+        for c in items
     ]
 
 
-@router.post(
-    "/schools/{school_id}/canteen/categories", response_model=CanteenCategoryOut, status_code=201
-)
-def create_category(
-    school_id: str,
-    payload: CanteenCategoryInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
+@router.post("/schools/{school_id}/canteen/categories", status_code=201)
+def create_category(school_id: str, data: CanteenCategoryInput, db: DB, user: CurrentUser):
     ensure_school_access(user, school_id)
-    if not (0 <= payload.share <= 1):
-        raise HTTPException(400, "share должен быть в диапазоне 0..1")
-    cid = f"cat-{school_id}-{db.query(models.CanteenCategory).filter_by(school_id=school_id).count() + 1}"
-    cat = models.CanteenCategory(
-        id=cid,
+    if user.role not in ("platform_admin", "school_admin", "canteen"):
+        raise HTTPException(403, "Недостаточно прав")
+    c = CanteenCategory(
         school_id=school_id,
-        name=payload.name,
-        share=payload.share,
-        avg_price=payload.avg_price,
-        unit=payload.unit,
+        name=data.name,
+        share=data.share,
+        avg_price=data.avgPrice,
+        unit=data.unit,
     )
-    db.add(cat)
+    db.add(c)
     db.commit()
-    db.refresh(cat)
+    db.refresh(c)
     return {
-        "id": cat.id,
-        "school_id": cat.school_id,
-        "name": cat.name,
-        "share": cat.share,
-        "avg_price": cat.avg_price,
-        "unit": cat.unit,
+        "id": c.id,
+        "schoolId": c.school_id,
+        "name": c.name,
+        "share": c.share,
+        "avgPrice": c.avg_price,
+        "unit": c.unit,
     }
 
 
-@router.patch("/canteen/categories/{category_id}", response_model=CanteenCategoryOut)
-def patch_category(
-    category_id: str,
-    payload: CanteenCategoryPatch,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
-    cat = db.get(models.CanteenCategory, category_id)
-    if not cat:
+@router.patch("/canteen/categories/{category_id}")
+def patch_category(category_id: str, data: CanteenCategoryPatch, db: DB, user: CurrentUser):
+    c = db.get(CanteenCategory, category_id)
+    if not c:
         raise HTTPException(404, "Категория не найдена")
-    ensure_school_access(user, cat.school_id)
-    data = payload.model_dump(exclude_unset=True)
-    if "share" in data and not (0 <= data["share"] <= 1):
-        raise HTTPException(400, "share должен быть в диапазоне 0..1")
-    for k, v in data.items():
-        setattr(cat, k, v)
+    ensure_school_access(user, c.school_id)
+    if user.role not in ("platform_admin", "school_admin", "canteen"):
+        raise HTTPException(403, "Недостаточно прав")
+    payload = data.model_dump(exclude_unset=True)
+    if "name" in payload and payload["name"] is not None:
+        c.name = payload["name"]
+    if "share" in payload and payload["share"] is not None:
+        c.share = payload["share"]
+    if "avgPrice" in payload and payload["avgPrice"] is not None:
+        c.avg_price = payload["avgPrice"]
+    if "unit" in payload and payload["unit"] is not None:
+        c.unit = payload["unit"]
     db.commit()
-    db.refresh(cat)
+    db.refresh(c)
     return {
-        "id": cat.id,
-        "school_id": cat.school_id,
-        "name": cat.name,
-        "share": cat.share,
-        "avg_price": cat.avg_price,
-        "unit": cat.unit,
+        "id": c.id,
+        "schoolId": c.school_id,
+        "name": c.name,
+        "share": c.share,
+        "avgPrice": c.avg_price,
+        "unit": c.unit,
     }
 
 
 @router.delete("/canteen/categories/{category_id}", status_code=204)
-def delete_category(
-    category_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("canteen", "school_admin")),
-):
-    cat = db.get(models.CanteenCategory, category_id)
-    if not cat:
+def delete_category(category_id: str, db: DB, user: CurrentUser):
+    c = db.get(CanteenCategory, category_id)
+    if not c:
         raise HTTPException(404, "Категория не найдена")
-    ensure_school_access(user, cat.school_id)
-    db.query(models.CanteenSale).filter_by(category_id=category_id).delete()
-    db.delete(cat)
+    ensure_school_access(user, c.school_id)
+    if user.role not in ("platform_admin", "school_admin", "canteen"):
+        raise HTTPException(403, "Недостаточно прав")
+    db.delete(c)
     db.commit()
+    return None
+
+
+@router.get("/schools/{school_id}/canteen/forecast")
+def canteen_forecast(school_id: str, db: DB, user: CurrentUser, date: str | None = None):
+    school = db.get(School, school_id)
+    if not school:
+        raise HTTPException(404, "Школа не найдена")
+    ensure_school_access(user, school_id)
+    target = parse_date(date)
+    f = _build_forecast(db, school, target)
+    return {
+        "schoolId": school.id,
+        "schoolName": school.name,
+        "date": target.isoformat(),
+        "mealPlan": school.meal_plan,
+        "present": f["present"],
+        "byCategory": f["byCategory"],
+        "totalPortions": f["totalPortions"],
+        "adjustmentDelta": f["adjustmentDelta"],
+        "status": f["status"],
+        "approvedAt": f["approvedAt"],
+        "approvedBy": f["approvedBy"],
+        "comment": f["comment"],
+        "basedOnDate": f["basedOnDate"],
+        "markedClasses": f["markedClasses"],
+        "totalClasses": f["totalClasses"],
+    }
+
+
+@router.get("/schools/{school_id}/canteen/sales")
+def canteen_sales(school_id: str, db: DB, user: CurrentUser, days: int = 14):
+    ensure_school_access(user, school_id)
+    end = today_tz()
+    start = end - timedelta(days=days - 1)
+    sales = (
+        db.query(CanteenSale)
+        .filter(
+            CanteenSale.school_id == school_id, CanteenSale.date >= start, CanteenSale.date <= end
+        )
+        .all()
+    )
+    cats = {
+        c.id: c
+        for c in db.query(CanteenCategory).filter(CanteenCategory.school_id == school_id).all()
+    }
+    by_day: dict[str, dict] = {}
+    for s in sales:
+        d = s.date.isoformat()
+        bucket = by_day.setdefault(d, {"date": d, "qty": 0, "amount": 0.0, "categories": {}})
+        bucket["qty"] += s.qty
+        bucket["amount"] += s.amount
+        if s.category_id and s.category_id in cats:
+            cat = cats[s.category_id]
+            cb = bucket["categories"].setdefault(
+                cat.id,
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "qty": 0,
+                    "amount": 0.0,
+                },
+            )
+            cb["qty"] += s.qty
+            cb["amount"] += s.amount
+    result = []
+    d = start
+    while d <= end:
+        key = d.isoformat()
+        row = by_day.get(key, {"date": key, "qty": 0, "amount": 0.0, "categories": {}})
+        row["categories"] = list(row["categories"].values())
+        result.append(row)
+        d += timedelta(days=1)
+    return result

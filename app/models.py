@@ -1,10 +1,8 @@
+import uuid
 from datetime import date, datetime
 
-from app.database import Base
 from sqlalchemy import (
-    JSON,
     Boolean,
-    Column,
     Date,
     DateTime,
     Float,
@@ -12,134 +10,203 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    func,
 )
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .database import Base
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
 
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(String, primary_key=True)
-    full_name = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False)
-    password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=True)
-    position = Column(String, nullable=True)
-    avatar_url = Column(String, nullable=True)
-    created_at = Column(Date, nullable=False, default=date.today)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    full_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(32), index=True)
+    position: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    school_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    school: Mapped["School | None"] = relationship(back_populates="users", foreign_keys=[school_id])
 
 
 class School(Base):
     __tablename__ = "schools"
-    id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    city = Column(String, nullable=False)
-    address = Column(String, nullable=False)
-    phone = Column(String, nullable=False)
-    email = Column(String, nullable=False)
-    meal_plan = Column(String, nullable=False, default="fixed")
-    timezone = Column(String, default="Europe/Minsk")
-    buffer_percent = Column(Integer, default=8)
-    attendance_deadline = Column(String, default="09:15")
-    access_enabled = Column(Boolean, default=True)
-    integration_pos = Column(Boolean, default=False)
-    integration_skud = Column(Boolean, default=False)
-    created_at = Column(Date, nullable=False, default=date.today)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255))
+    city: Mapped[str] = mapped_column(String(128))
+    address: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(255), default="")
+    meal_plan: Mapped[str] = mapped_column(String(16), default="fixed")  # fixed | canteen
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Minsk")
+    buffer_percent: Mapped[int] = mapped_column(Integer, default=10)
+    attendance_deadline: Mapped[str] = mapped_column(String(5), default="09:00")
+    access_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    integration_pos: Mapped[bool] = mapped_column(Boolean, default=False)
+    integration_skud: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-
-class SchoolAdmin(Base):
-    __tablename__ = "school_admins"
-    school_id = Column(String, ForeignKey("schools.id"), primary_key=True)
-    user_id = Column(String, ForeignKey("users.id"), primary_key=True)
+    users: Mapped[list[User]] = relationship(back_populates="school", foreign_keys=[User.school_id])
+    classes: Mapped[list["SchoolClass"]] = relationship(
+        back_populates="school", cascade="all, delete-orphan"
+    )
+    students: Mapped[list["Student"]] = relationship(
+        back_populates="school", cascade="all, delete-orphan"
+    )
 
 
 class SchoolClass(Base):
     __tablename__ = "classes"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    name = Column(String, nullable=False)
-    grade = Column(Integer, nullable=False)
-    age_group = Column(String, nullable=False)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    grade: Mapped[int] = mapped_column(Integer)
+    age_group: Mapped[str] = mapped_column(String(16), default="middle")  # junior|middle|senior
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    school: Mapped[School] = relationship(back_populates="classes")
+    students: Mapped[list["Student"]] = relationship(
+        back_populates="klass", cascade="all, delete-orphan"
+    )
+    teacher_links: Mapped[list["ClassTeacher"]] = relationship(
+        back_populates="klass", cascade="all, delete-orphan"
+    )
 
 
 class ClassTeacher(Base):
     __tablename__ = "class_teachers"
-    class_id = Column(String, ForeignKey("classes.id"), primary_key=True)
-    teacher_id = Column(String, ForeignKey("users.id"), primary_key=True)
+    __table_args__ = (UniqueConstraint("class_id", "teacher_id", name="uq_class_teacher"),)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    class_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("classes.id", ondelete="CASCADE"), index=True
+    )
+    teacher_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+
+    klass: Mapped[SchoolClass] = relationship(back_populates="teacher_links")
 
 
 class Student(Base):
     __tablename__ = "students"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    class_id = Column(String, ForeignKey("classes.id"), nullable=False)
-    full_name = Column(String, nullable=False)
-    meal_status = Column(String, default="regular")
-    age_group = Column(String, nullable=False)
-    card_number = Column(String, nullable=False)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    class_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("classes.id", ondelete="CASCADE"), index=True
+    )
+    full_name: Mapped[str] = mapped_column(String(255))
+    meal_status: Mapped[str] = mapped_column(String(16), default="regular")  # regular|opt_out
+    age_group: Mapped[str] = mapped_column(String(16), default="middle")
+    card_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    school: Mapped[School] = relationship(back_populates="students")
+    klass: Mapped[SchoolClass] = relationship(back_populates="students")
 
 
-class AttendanceRecord(Base):
+class Attendance(Base):
     __tablename__ = "attendance"
-    id = Column(String, primary_key=True)
-    class_id = Column(String, ForeignKey("classes.id"), nullable=False)
-    date = Column(Date, nullable=False)
-    submitted_at = Column(DateTime, nullable=False)
-    submitted_by_id = Column(String, ForeignKey("users.id"), nullable=False)
-    absent_student_ids = Column(JSON, default=list)
     __table_args__ = (UniqueConstraint("class_id", "date", name="uq_attendance_class_date"),)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    class_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("classes.id", ondelete="CASCADE"), index=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True)
+    absent_ids: Mapped[str] = mapped_column(String, default="")  # comma-separated ids
+    submitted_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True
+    )
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ForecastApproval(Base):
     __tablename__ = "forecast_approvals"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    date = Column(Date, nullable=False)
-    approved_at = Column(DateTime, nullable=False)
-    approved_by_id = Column(String, ForeignKey("users.id"), nullable=False)
-    comment = Column(String, default="")
     __table_args__ = (UniqueConstraint("school_id", "date", name="uq_approval_school_date"),)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True)
+    comment: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True
+    )
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ForecastAdjustment(Base):
     __tablename__ = "forecast_adjustments"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    date = Column(Date, nullable=False)
-    delta = Column(Integer, nullable=False)
-    reason = Column(String, nullable=True)
-    created_by_id = Column(String, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    __table_args__ = (UniqueConstraint("school_id", "date", name="uq_adjustment_school_date"),)
+    __table_args__ = (UniqueConstraint("school_id", "date", name="uq_adjust_school_date"),)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True)
+    delta: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CanteenCategory(Base):
     __tablename__ = "canteen_categories"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    name = Column(String, nullable=False)
-    share = Column(Float, nullable=False)
-    avg_price = Column(Float, nullable=False)
-    unit = Column(String, default="порция")
-
-
-class CanteenSale(Base):
-    __tablename__ = "canteen_sales"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    date = Column(Date, nullable=False)
-    category_id = Column(String, ForeignKey("canteen_categories.id"), nullable=False)
-    qty = Column(Integer, nullable=False)
-    revenue = Column(Float, nullable=False)
-    waste_qty = Column(Integer, default=0)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    share: Mapped[float] = mapped_column(Float, default=0.5)
+    avg_price: Mapped[float] = mapped_column(Float, default=0)
+    unit: Mapped[str] = mapped_column(String(16), default="порция")
 
 
 class AccessEvent(Base):
     __tablename__ = "access_events"
-    id = Column(String, primary_key=True)
-    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
-    student_id = Column(String, ForeignKey("students.id"), nullable=False)
-    type = Column(String, nullable=False)
-    source = Column(String, nullable=False)
-    date = Column(Date, nullable=False)
-    time = Column(String, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    student_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("students.id", ondelete="CASCADE"), index=True
+    )
+    type: Mapped[str] = mapped_column(String(8))  # entry|exit
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual|skud
+    date: Mapped[date] = mapped_column(Date, index=True)
+    time: Mapped[str] = mapped_column(String(8))  # HH:MM
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CanteenSale(Base):
+    __tablename__ = "canteen_sales"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    category_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("canteen_categories.id", ondelete="SET NULL"), nullable=True
+    )
+    date: Mapped[date] = mapped_column(Date, index=True)
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[float] = mapped_column(Float, default=0)

@@ -1,306 +1,282 @@
-from datetime import date
+from fastapi import APIRouter, HTTPException
 
-from app import models
-from app.auth import get_password_hash
-from app.database import get_db
-from app.deps import ensure_school_access, get_current_user, require_roles
-from app.schemas import (
-    AssignTeacherInput,
-    ClassCreateInput,
-    ClassOut,
-    ClassPatchInput,
-    SchoolOut,
-    SchoolPatchInput,
-    StudentCreateInput,
-    StudentOut,
-    StudentPatchInput,
-    StudentWithClassOut,
-    TeacherCreateInput,
-    TeacherWithClassesOut,
-)
-from app.serializers import (
-    class_out,
-    school_out,
-    student_out,
-    student_with_class_out,
-    teacher_with_classes_out,
-)
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from ..deps import DB, CurrentUser, ensure_school_access
+from ..models import Attendance, School, SchoolClass, Student, User
+from ..schemas import SchoolOut, SchoolPatch
+from ..utils import parse_date, str_to_ids
+from .platform import school_to_out
 
-router = APIRouter(tags=["schools"])
+router = APIRouter(prefix="/schools", tags=["schools"])
 
 
-@router.get("/schools/{school_id}", response_model=SchoolOut)
-def get_school(
-    school_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    ensure_school_access(user, school_id)
-    s = db.get(models.School, school_id)
-    if not s:
+@router.get("/{school_id}", response_model=SchoolOut)
+def get_school(school_id: str, db: DB, user: CurrentUser):
+    school = db.get(School, school_id)
+    if not school:
         raise HTTPException(404, "Школа не найдена")
-    return school_out(db, s)
-
-
-@router.patch("/schools/{school_id}", response_model=SchoolOut)
-def patch_school(
-    school_id: str,
-    payload: SchoolPatchInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
     ensure_school_access(user, school_id)
-    s = db.get(models.School, school_id)
-    if not s:
+    return school_to_out(school, db)
+
+
+@router.patch("/{school_id}", response_model=SchoolOut)
+def patch_school(school_id: str, data: SchoolPatch, db: DB, user: CurrentUser):
+    school = db.get(School, school_id)
+    if not school:
         raise HTTPException(404, "Школа не найдена")
-    data = payload.model_dump(exclude_unset=True)
-    if "integrations" in data and data["integrations"] is not None:
-        s.integration_pos = bool(data["integrations"].get("pos"))
-        s.integration_skud = bool(data["integrations"].get("skud"))
-        del data["integrations"]
-    for k, v in data.items():
-        setattr(s, k, v)
+    if user.role not in ("platform_admin", "school_admin"):
+        raise HTTPException(403, "Недостаточно прав")
+    ensure_school_access(user, school_id)
+    mapping = {
+        "name": "name",
+        "city": "city",
+        "address": "address",
+        "phone": "phone",
+        "email": "email",
+        "mealPlan": "meal_plan",
+        "timezone": "timezone",
+        "bufferPercent": "buffer_percent",
+        "attendanceDeadline": "attendance_deadline",
+    }
+    payload = data.model_dump(exclude_unset=True)
+    for key, attr in mapping.items():
+        if key in payload and payload[key] is not None:
+            setattr(school, attr, payload[key])
+    if payload.get("integrations"):
+        school.integration_pos = payload["integrations"]["pos"]
+        school.integration_skud = payload["integrations"]["skud"]
     db.commit()
-    db.refresh(s)
-    return school_out(db, s)
+    db.refresh(school)
+    return school_to_out(school, db)
 
 
-@router.get("/schools/{school_id}/classes", response_model=list[ClassOut])
-def list_classes(
-    school_id: str,
-    date: date | None = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
+@router.get("/{school_id}/classes")
+def list_classes(school_id: str, db: DB, user: CurrentUser, date_: str | None = None):
     ensure_school_access(user, school_id)
-    return [
-        class_out(db, c, date)
-        for c in db.query(models.SchoolClass).filter_by(school_id=school_id).all()
-    ]
-
-
-@router.post("/schools/{school_id}/classes", response_model=ClassOut, status_code=201)
-def create_class(
-    school_id: str,
-    payload: ClassCreateInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    ensure_school_access(user, school_id)
-    age_group = payload.age_group or (
-        "junior" if payload.grade <= 4 else "middle" if payload.grade <= 9 else "senior"
+    target = parse_date(date_)
+    classes = (
+        db.query(SchoolClass)
+        .filter(SchoolClass.school_id == school_id)
+        .order_by(SchoolClass.grade, SchoolClass.name)
+        .all()
     )
-    cid = f"class-{school_id}-{payload.name.lower()}-{db.query(models.SchoolClass).count() + 1}"
-    cls = models.SchoolClass(
-        id=cid, school_id=school_id, name=payload.name, grade=payload.grade, age_group=age_group
+    result = []
+    for c in classes:
+        teachers = (
+            db.query(User)
+            .join(
+                __import__("app.models", fromlist=["ClassTeacher"]).ClassTeacher,
+                __import__("app.models", fromlist=["ClassTeacher"]).ClassTeacher.teacher_id
+                == User.id,
+            )
+            .filter(
+                __import__("app.models", fromlist=["ClassTeacher"]).ClassTeacher.class_id == c.id
+            )
+            .all()
+        )
+        students_count = db.query(Student).filter(Student.class_id == c.id).count()
+        opt = (
+            db.query(Student)
+            .filter(Student.class_id == c.id, Student.meal_status == "opt_out")
+            .count()
+        )
+        rec = (
+            db.query(Attendance)
+            .filter(Attendance.class_id == c.id, Attendance.date == target)
+            .first()
+        )
+        attendance = None
+        if rec:
+            submitter = db.get(User, rec.submitted_by) if rec.submitted_by else None
+            attendance = {
+                "status": "submitted",
+                "absentCount": len(str_to_ids(rec.absent_ids)),
+                "submittedAt": rec.submitted_at.isoformat() if rec.submitted_at else None,
+                "submittedByName": submitter.full_name if submitter else None,
+            }
+        result.append(
+            {
+                "id": c.id,
+                "schoolId": c.school_id,
+                "name": c.name,
+                "grade": c.grade,
+                "ageGroup": c.age_group,
+                "teacherIds": [t.id for t in teachers],
+                "teacherNames": [t.full_name for t in teachers],
+                "studentsCount": students_count,
+                "optOutsCount": opt,
+                "attendance": attendance,
+            }
+        )
+    return result
+
+
+@router.post("/{school_id}/classes", status_code=201)
+def create_class(school_id: str, data: dict, db: DB, user: CurrentUser):
+    ensure_school_access(user, school_id)
+    if user.role not in ("platform_admin", "school_admin"):
+        raise HTTPException(403, "Недостаточно прав")
+    grade = int(data.get("grade", 1))
+    age_group = data.get("ageGroup") or (
+        "junior" if grade <= 4 else "middle" if grade <= 9 else "senior"
     )
-    db.add(cls)
-    if payload.teacher_id:
-        db.add(models.ClassTeacher(class_id=cid, teacher_id=payload.teacher_id))
-    db.commit()
-    db.refresh(cls)
-    return class_out(db, cls)
-
-
-@router.get("/classes/{class_id}", response_model=ClassOut)
-def get_class(
-    class_id: str,
-    date: date | None = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    return class_out(db, cls, date)
-
-
-@router.patch("/classes/{class_id}", response_model=ClassOut)
-def patch_class(
-    class_id: str,
-    payload: ClassPatchInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    data = payload.model_dump(exclude_unset=True)
-    teacher_id = data.pop("teacher_id", None)
-    for k, v in data.items():
-        setattr(cls, k, v)
-    if teacher_id is not None:
-        db.query(models.ClassTeacher).filter_by(class_id=class_id).delete()
-        db.add(models.ClassTeacher(class_id=class_id, teacher_id=teacher_id))
-    db.commit()
-    db.refresh(cls)
-    return class_out(db, cls)
-
-
-@router.delete("/classes/{class_id}", status_code=204)
-def delete_class(
-    class_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    db.query(models.ClassTeacher).filter_by(class_id=class_id).delete()
-    db.query(models.Student).filter_by(class_id=class_id).delete()
-    db.query(models.AttendanceRecord).filter_by(class_id=class_id).delete()
-    db.delete(cls)
-    db.commit()
-
-
-@router.get("/classes/{class_id}/students", response_model=list[StudentOut])
-def list_students(
-    class_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    return [student_out(s) for s in db.query(models.Student).filter_by(class_id=class_id).all()]
-
-
-@router.post("/classes/{class_id}/students", response_model=StudentOut, status_code=201)
-def create_student(
-    class_id: str,
-    payload: StudentCreateInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    sid = f"s-{db.query(models.Student).count() + 1}"
-    s = models.Student(
-        id=sid,
-        school_id=cls.school_id,
-        class_id=class_id,
-        full_name=payload.full_name,
-        meal_status=payload.meal_status,
-        age_group=cls.age_group,
-        card_number=f"C-{db.query(models.Student).count() + 1:04d}",
-    )
-    db.add(s)
-    db.commit()
-    db.refresh(s)
-    return student_out(s)
-
-
-@router.post("/classes/{class_id}/teacher", response_model=ClassOut)
-def assign_teacher(
-    class_id: str,
-    payload: AssignTeacherInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    cls = db.get(models.SchoolClass, class_id)
-    if not cls:
-        raise HTTPException(404, "Класс не найден")
-    ensure_school_access(user, cls.school_id)
-    if (
-        not db.query(models.ClassTeacher)
-        .filter_by(class_id=class_id, teacher_id=payload.teacher_id)
-        .first()
-    ):
-        db.add(models.ClassTeacher(class_id=class_id, teacher_id=payload.teacher_id))
-        db.commit()
-    return class_out(db, cls)
-
-
-@router.patch("/students/{student_id}", response_model=StudentOut)
-def patch_student(
-    student_id: str,
-    payload: StudentPatchInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    s = db.get(models.Student, student_id)
-    if not s:
-        raise HTTPException(404, "Ученик не найден")
-    ensure_school_access(user, s.school_id)
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(s, k, v)
-    db.commit()
-    db.refresh(s)
-    return student_out(s)
-
-
-@router.delete("/students/{student_id}", status_code=204)
-def delete_student(
-    student_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    s = db.get(models.Student, student_id)
-    if not s:
-        raise HTTPException(404, "Ученик не найден")
-    ensure_school_access(user, s.school_id)
-    db.query(models.AccessEvent).filter_by(student_id=student_id).delete()
-    db.delete(s)
-    db.commit()
-
-
-@router.get("/schools/{school_id}/students", response_model=list[StudentWithClassOut])
-def list_school_students(
-    school_id: str,
-    query: str | None = None,
-    search_by: str = Query("surname", alias="searchBy"),
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    ensure_school_access(user, school_id)
-    q = db.query(models.Student).filter_by(school_id=school_id)
-    if query:
-        if search_by == "surname":
-            q = q.filter(models.Student.full_name.ilike(f"{query}%"))
-        elif search_by == "firstname":
-            q = q.filter(models.Student.full_name.ilike(f"% {query}%"))
-        elif search_by == "middlename":
-            q = q.filter(models.Student.full_name.ilike(f"% % {query}%"))
-        else:
-            q = q.filter(models.Student.full_name.ilike(f"{query}%"))
-    return [student_with_class_out(db, s) for s in q.all()]
-
-
-@router.get("/schools/{school_id}/teachers", response_model=list[TeacherWithClassesOut])
-def list_teachers(
-    school_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    ensure_school_access(user, school_id)
-    return [
-        teacher_with_classes_out(db, t)
-        for t in db.query(models.User).filter_by(school_id=school_id, role="teacher").all()
-    ]
-
-
-@router.post("/schools/{school_id}/teachers", response_model=TeacherWithClassesOut, status_code=201)
-def create_teacher(
-    school_id: str,
-    payload: TeacherCreateInput,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(require_roles("school_admin")),
-):
-    ensure_school_access(user, school_id)
-    if db.query(models.User).filter_by(email=payload.email).first():
-        raise HTTPException(400, "Email уже существует")
-    t = models.User(
-        id=f"u-{school_id}-t{db.query(models.User).filter_by(school_id=school_id).count() + 1}",
-        full_name=payload.full_name,
-        email=payload.email,
-        role="teacher",
+    klass = SchoolClass(
         school_id=school_id,
-        position=payload.position or "Учитель",
-        password_hash=get_password_hash(payload.password),
+        name=data["name"],
+        grade=grade,
+        age_group=age_group,
+    )
+    db.add(klass)
+    db.flush()
+    if data.get("teacherId"):
+        from ..models import ClassTeacher
+
+        db.add(ClassTeacher(class_id=klass.id, teacher_id=data["teacherId"]))
+    db.commit()
+    db.refresh(klass)
+    return {
+        "id": klass.id,
+        "schoolId": klass.school_id,
+        "name": klass.name,
+        "grade": klass.grade,
+        "ageGroup": klass.age_group,
+        "teacherIds": [],
+        "teacherNames": [],
+        "studentsCount": 0,
+        "optOutsCount": 0,
+        "attendance": None,
+    }
+
+
+@router.get("/{school_id}/teachers")
+def list_teachers(school_id: str, db: DB, user: CurrentUser):
+    ensure_school_access(user, school_id)
+    from ..models import ClassTeacher
+
+    teachers = db.query(User).filter(User.school_id == school_id, User.role == "teacher").all()
+    result = []
+    for t in teachers:
+        classes = (
+            db.query(SchoolClass)
+            .join(ClassTeacher, ClassTeacher.class_id == SchoolClass.id)
+            .filter(ClassTeacher.teacher_id == t.id)
+            .all()
+        )
+        result.append(
+            {
+                "id": t.id,
+                "fullName": t.full_name,
+                "email": t.email,
+                "role": t.role,
+                "schoolId": t.school_id,
+                "position": t.position,
+                "classes": [{"id": c.id, "name": c.name, "grade": c.grade} for c in classes],
+            }
+        )
+    return result
+
+
+@router.post("/{school_id}/teachers", status_code=201)
+def create_teacher(school_id: str, data: dict, db: DB, user: CurrentUser):
+    ensure_school_access(user, school_id)
+    if user.role not in ("platform_admin", "school_admin"):
+        raise HTTPException(403, "Недостаточно прав")
+    from ..security import hash_password
+
+    email = data["email"]
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(409, "Пользователь с таким e-mail уже существует")
+    role = data.get("role", "teacher")
+    if role not in ("teacher", "guard"):
+        raise HTTPException(400, "Недопустимая роль")
+    t = User(
+        full_name=data["fullName"],
+        email=email,
+        password_hash=hash_password(data["password"]),
+        role=role,
+        school_id=school_id,
+        position=data.get("position"),
     )
     db.add(t)
     db.commit()
     db.refresh(t)
-    return teacher_with_classes_out(db, t)
+    return {
+        "id": t.id,
+        "fullName": t.full_name,
+        "email": t.email,
+        "role": t.role,
+        "schoolId": t.school_id,
+        "position": t.position,
+        "classes": [],
+    }
+
+
+@router.get("/{school_id}/students")
+def search_students(
+    school_id: str,
+    db: DB,
+    user: CurrentUser,
+    query: str | None = None,
+    search_by: str = "surname",
+):
+    ensure_school_access(user, school_id)
+    q = db.query(Student).filter(Student.school_id == school_id)
+    if query:
+        needle = query.strip().lower()
+        if search_by == "firstname":
+            # эвристика: ФИО хранится как "Фамилия Имя Отчество"
+            q = q.filter(Student.full_name.ilike(f"% {needle}%"))
+        elif search_by == "middlename":
+            q = q.filter(Student.full_name.ilike(f"% % {needle}%"))
+        else:
+            q = q.filter(Student.full_name.ilike(f"{needle}%"))
+    students = q.order_by(Student.full_name).limit(500).all()
+    cls_names = {
+        c.id: c.name for c in db.query(SchoolClass).filter(SchoolClass.school_id == school_id).all()
+    }
+    return [
+        {
+            "id": s.id,
+            "schoolId": s.school_id,
+            "classId": s.class_id,
+            "fullName": s.full_name,
+            "mealStatus": s.meal_status,
+            "ageGroup": s.age_group,
+            "cardNumber": s.card_number,
+            "className": cls_names.get(s.class_id),
+        }
+        for s in students
+    ]
+
+
+@router.get("/{school_id}/attendance/summary")
+def attendance_summary(school_id: str, db: DB, user: CurrentUser, date: str | None = None):
+    ensure_school_access(user, school_id)
+    target = parse_date(date)
+    classes = db.query(SchoolClass).filter(SchoolClass.school_id == school_id).all()
+    total_students = present = absent = opt = marked = 0
+    for c in classes:
+        st = db.query(Student).filter(Student.class_id == c.id).all()
+        total_students += len(st)
+        opt_here = sum(1 for s in st if s.meal_status == "opt_out")
+        opt += opt_here
+        rec = (
+            db.query(Attendance)
+            .filter(Attendance.class_id == c.id, Attendance.date == target)
+            .first()
+        )
+        if rec:
+            marked += 1
+            a = len(str_to_ids(rec.absent_ids))
+            absent += a
+            present += max(len(st) - opt_here - a, 0)
+        else:
+            present += max(len(st) - opt_here, 0)
+    return {
+        "date": target.isoformat(),
+        "totalStudents": total_students,
+        "present": present,
+        "absent": absent,
+        "optOuts": opt,
+        "markedClasses": marked,
+        "totalClasses": len(classes),
+    }

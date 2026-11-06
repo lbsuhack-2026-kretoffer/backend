@@ -1,25 +1,37 @@
 version: '3.8'
-
 services:
   db:
-    image: postgres:16-alpine
-    container_name: hakaton_db
+    image: postgres:16
+    container_name: sbp_db
     environment:
-      POSTGRES_USER: school
-      POSTGRES_PASSWORD: school
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: school_balance
     ports:
       - "5432:5432"
-    restart: unless-stopped
+    volumes:
+      - sbp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
 
   backend:
     build: .
-    container_name: hakaton_backend
+    container_name: sbp_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/school_balance
+      SECRET_KEY: change-me-in-prod
+      FRONTEND_ORIGINS: http://localhost:5173,http://localhost:8080
+      SUPERADMIN_EMAIL: admin@school-balance.by
+      SUPERADMIN_PASSWORD: admin12345
+      SUPERADMIN_NAME: Платформенный администратор
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://school:school@db:5432/school_balance
-      - SEED_DEMO=true
-    depends_on:
-      - db
-    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+volumes:
+  sbp_pgdata:
