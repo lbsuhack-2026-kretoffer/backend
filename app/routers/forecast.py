@@ -163,10 +163,14 @@ def _build_forecast(db, school: School, target: date) -> dict:
         )
         ml_payload["yesterday_total_qty"] = sum(row[0] for row in yesterday_qty)
 
-    ml_result = ml_adjust_forecast(ml_payload)
-    if ml_result:
-        total_portions = int(ml_result.get("total_portions", total_portions))
-        confidence = float(ml_result.get("confidence", confidence))
+    # ML-корректировка применяется только если достаточно учеников — иначе
+    # на холодном старте ИИ может вернуть неадекватное значение (например, 21 вместо 4).
+    # Для небольших школ используем локальный расчёт с буфером.
+    if total_students >= 10:
+        ml_result = ml_adjust_forecast(ml_payload)
+        if ml_result:
+            total_portions = int(ml_result.get("total_portions", total_portions))
+            confidence = float(ml_result.get("confidence", confidence))
 
     return {
         "schoolId": school.id,
