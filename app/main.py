@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -61,6 +62,17 @@ async def validation_exc_handler(request: Request, exc: RequestValidationError):
             "detail": "Некорректные данные: "
             + "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())
         },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exc_handler(request: Request, exc: Exception):
+    logging.getLogger("uvicorn.error").exception(
+        f"Unhandled error on {request.method} {request.url.path}: {exc}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Внутренняя ошибка сервера: {exc}"},
     )
 
 

@@ -6,6 +6,7 @@ from ..deps import DB, CurrentUser, ensure_school_access
 from ..models import (
     Attendance,
     CanteenCategory,
+    CanteenSale,
     ForecastAdjustment,
     ForecastApproval,
     School,
@@ -14,6 +15,7 @@ from ..models import (
     User,
 )
 from ..schemas import AdjustInput, ApproveInput
+from ..services.ml_client import adjust_forecast as ml_adjust_forecast
 from ..utils import ceil_int, parse_date, str_to_ids, today_tz
 
 router = APIRouter(prefix="/schools", tags=["forecast"])
@@ -128,6 +130,43 @@ def _build_forecast(db, school: School, target: date) -> dict:
     ]
 
     confidence = 0.9 if marked == total_classes and total_classes else 0.6
+
+    # --- AI-сервис: ML-корректировка прогноза (total_portions, confidence) ---
+    ml_payload = {
+        "school_id": school.id,
+        "school_name": school.name,
+        "date": target.isoformat(),
+        "meal_plan": school.meal_plan,
+        "buffer_percent": school.buffer_percent,
+        "total_students": total_students,
+        "opt_outs": opt_outs,
+        "absent": total_absent,
+        "present": present,
+        "total_portions": total_portions,
+        "by_age_group": by_age_list,
+        "by_category": by_category,
+        "marked_classes": marked,
+        "total_classes": total_classes,
+        "based_on_date": based_on.isoformat(),
+        "confidence": confidence,
+    }
+    if school.meal_plan == "canteen":
+        yesterday = target - timedelta(days=1)
+        yesterday_qty = (
+            db.query(CanteenSale)
+            .filter(
+                CanteenSale.school_id == school.id,
+                CanteenSale.date == yesterday,
+            )
+            .with_entities(CanteenSale.qty)
+            .all()
+        )
+        ml_payload["yesterday_total_qty"] = sum(row[0] for row in yesterday_qty)
+
+    ml_result = ml_adjust_forecast(ml_payload)
+    if ml_result:
+        total_portions = int(ml_result.get("total_portions", total_portions))
+        confidence = float(ml_result.get("confidence", confidence))
 
     return {
         "schoolId": school.id,

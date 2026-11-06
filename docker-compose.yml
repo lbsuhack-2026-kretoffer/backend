@@ -29,9 +29,21 @@ services:
       SUPERADMIN_EMAIL: admin@school-balance.by
       SUPERADMIN_PASSWORD: changeme123
       SUPERADMIN_NAME: Платформенный администратор
+      ML_SERVICE_URL: http://ai-service:8000
+      ML_SERVICE_TIMEOUT: "5.0"
     ports:
       - "8000:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  ai-service:
+    build: ../ai-service
+    container_name: sbp_ai_service
+    ports:
+      - "8001:8000"
+    volumes:
+      - ../ai-service/models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
 
 volumes:
   sbp_pgdata:

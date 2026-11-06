@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     superadmin_email: str = "admin@school-balance.by"
     superadmin_password: str = "changeme123"
     superadmin_name: str = "Платформенный администратор"
+    ml_service_url: str = "http://localhost:8001"
+    ml_service_timeout: float = 5.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
