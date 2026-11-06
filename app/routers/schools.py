@@ -180,14 +180,21 @@ def create_teacher(school_id: str, data: dict, db: DB, user: CurrentUser):
     ensure_school_access(user, school_id)
     if user.role not in ("platform_admin", "school_admin"):
         raise HTTPException(403, "Недостаточно прав")
+
     from ..security import hash_password
 
     email = data["email"]
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(409, "Пользователь с таким e-mail уже существует")
-    role = data.get("role", "teacher")
+
+    # роль: явное поле role, иначе — по position (вахта/охрана → guard)
+    role = data.get("role")
+    if role is None:
+        position = (data.get("position") or "").lower()
+        role = "guard" if ("охран" in position or "вахт" in position) else "teacher"
     if role not in ("teacher", "guard"):
         raise HTTPException(400, "Недопустимая роль")
+
     t = User(
         full_name=data["fullName"],
         email=email,

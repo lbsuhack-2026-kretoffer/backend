@@ -27,7 +27,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     full_name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(String(255), default="")  # ← добавлен default
     role: Mapped[str] = mapped_column(String(32), index=True)
     position: Mapped[str | None] = mapped_column(String(128), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -210,3 +210,18 @@ class CanteenSale(Base):
     date: Mapped[date] = mapped_column(Date, index=True)
     qty: Mapped[int] = mapped_column(Integer, default=0)
     amount: Mapped[float] = mapped_column(Float, default=0)
+
+
+class SchoolAdmin(Base):
+    """Явная связь школа ↔ завуч, как просит api (3).md, п.4."""
+
+    __tablename__ = "school_admins"
+    __table_args__ = (UniqueConstraint("school_id", "user_id", name="uq_school_admin"),)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    school_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,22 +1,13 @@
-import uuid
-
 from fastapi import APIRouter, HTTPException, Response, status
 
+from ..auth_service import authenticate_user
 from ..config import settings
 from ..deps import DB, CurrentUser
 from ..models import School, User
 from ..schemas import LoginInput, UserOut
-from ..security import encode_session, sign_cookie, verify_password
+from ..security import encode_session, sign_cookie
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        uuid.UUID(value)
-        return True
-    except (ValueError, AttributeError, TypeError):
-        return False
 
 
 def user_to_out(user: User, db) -> UserOut:
@@ -35,16 +26,8 @@ def user_to_out(user: User, db) -> UserOut:
 
 @router.post("/login", response_model=UserOut)
 def login(data: LoginInput, db: DB, response: Response):
-    login = data.login.strip()
-
-    q = db.query(User)
-    if _is_uuid(login):
-        q = q.filter((User.email == login) | (User.id == login))
-    else:
-        q = q.filter(User.email == login)
-
-    user = q.first()
-    if not user or not verify_password(data.password, user.password_hash):
+    user = authenticate_user(db, data.login, data.password)
+    if not user:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Неверный логин или пароль")
     if user.school_id:
         school = db.get(School, user.school_id)

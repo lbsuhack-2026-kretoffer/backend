@@ -1,22 +1,35 @@
+import hashlib
 import hmac
 import json
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from hashlib import sha256
 
-import bcrypt
-
 from .config import settings
 
-
-def hash_password(p: str) -> str:
-    return bcrypt.hashpw(p.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+# ---------- Пароли: pbkdf2_sha256, как требует api (3).md, п.2 ----------
 
 
-def verify_password(p: str, h: str) -> bool:
-    try:
-        return bcrypt.checkpw(p.encode("utf-8"), h.encode("utf-8"))
-    except Exception:
+def hash_password(password: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        settings.secret_key.encode("utf-8"),
+        100_000,
+    ).hex()
+
+
+def verify_password(plain_password: str, password_hash: str) -> bool:
+    if not password_hash:
         return False
+    expected = hash_password(plain_password)
+    return hmac.compare_digest(expected, password_hash)
+
+
+# Обратная совместимость: в старом коде использовалось имя get_password_hash
+get_password_hash = hash_password
+
+
+# ---------- Сессии: HMAC-подпись + itsdangerous-cookie ----------
 
 
 def _sign(payload: bytes) -> str:
