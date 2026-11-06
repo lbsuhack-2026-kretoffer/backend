@@ -44,9 +44,7 @@ def list_events(
 
 
 @router.post(
-    "/schools/{school_id}/access-events/manual",
-    response_model=AccessEventOut,
-    status_code=201,
+    "/schools/{school_id}/access-events/manual", response_model=AccessEventOut, status_code=201
 )
 def manual_event(
     school_id: str,
@@ -56,11 +54,10 @@ def manual_event(
 ):
     ensure_school_access(user, school_id)
     if payload.type not in ("entry", "exit"):
-        raise HTTPException(status_code=400, detail="type должен быть entry или exit")
+        raise HTTPException(400, "type должен быть entry или exit")
     student = db.get(models.Student, payload.student_id)
     if not student or student.school_id != school_id:
-        raise HTTPException(status_code=404, detail="Ученик не найден в этой школе")
-
+        raise HTTPException(404, "Ученик не найден в этой школе")
     now = datetime.now()
     event = models.AccessEvent(
         id=f"evt-{db.query(models.AccessEvent).count() + 1}",

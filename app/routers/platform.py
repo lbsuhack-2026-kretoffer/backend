@@ -1,6 +1,7 @@
 from datetime import date
 
 from app import models
+from app.auth import get_password_hash
 from app.database import get_db
 from app.deps import require_roles
 from app.schemas import (
@@ -20,49 +21,37 @@ router = APIRouter(prefix="/platform", tags=["platform"])
 
 
 @router.get("/stats", response_model=PlatformStatsOut)
-def stats(
-    db: Session = Depends(get_db),
-    _: models.User = Depends(require_roles("platform_admin")),
-):
+def stats(db: Session = Depends(get_db), _: models.User = Depends(require_roles("platform_admin"))):
     schools = db.query(models.School).all()
-    students = db.query(models.Student).count()
     classes = db.query(models.SchoolClass).count()
-    teachers = db.query(models.User).filter_by(role="teacher").count()
-
     today = date.today()
-    total_students = 0
-    opt_outs = 0
-    absent = 0
-    present = 0
-    marked_classes = 0
-    total_classes = classes
 
+    total_students, opt_outs, absent, present, marked_classes = 0, 0, 0, 0, 0
     for cls in db.query(models.SchoolClass).all():
         cls_students = db.query(models.Student).filter_by(class_id=cls.id).all()
-        n_students = len(cls_students)
         n_opt = sum(1 for s in cls_students if s.meal_status == "optOut")
-        regular_ids = {s.id for s in cls_students if s.meal_status == "regular"}
+        reg_ids = {s.id for s in cls_students if s.meal_status == "regular"}
         att = db.query(models.AttendanceRecord).filter_by(class_id=cls.id, date=today).first()
-        n_absent = len(set(att.absent_student_ids or []) & regular_ids) if att else 0
+        n_abs = len(set(att.absent_student_ids or []) & reg_ids) if att else 0
         if att:
             marked_classes += 1
-        total_students += n_students
+        total_students += len(cls_students)
         opt_outs += n_opt
-        absent += n_absent
-        present += max(0, n_students - n_opt - n_absent)
+        absent += n_abs
+        present += max(0, len(cls_students) - n_opt - n_abs)
 
     return {
         "schools": len(schools),
-        "active_schools": len(schools),
-        "students": students,
+        "active_schools": sum(1 for s in schools if s.access_enabled),
+        "students": db.query(models.Student).count(),
         "classes": classes,
-        "teachers": teachers,
+        "teachers": db.query(models.User).filter_by(role="teacher").count(),
         "attendance": {
             "present": present,
             "absent": absent,
             "opt_outs": opt_outs,
             "marked_classes": marked_classes,
-            "total_classes": total_classes,
+            "total_classes": classes,
             "date": today,
         },
     }
@@ -113,23 +102,18 @@ def create_school(
     db.add(school)
     db.flush()
 
-    if payload.admin_email:
-        existing = db.query(models.User).filter_by(email=payload.admin_email).first()
-        if existing:
-            existing.school_id = sid
-            existing.role = "school_admin"
-            admin = existing
-        else:
-            admin = models.User(
-                id=f"u-{sid}",
-                full_name=payload.admin_full_name or "Завуч",
-                email=payload.admin_email,
-                role="school_admin",
-                school_id=sid,
-                position="Завуч",
-            )
-            db.add(admin)
-            db.flush()
+    if payload.admin_email and payload.admin_password:
+        admin = models.User(
+            id=f"u-{sid}",
+            full_name=payload.admin_full_name or "Завуч",
+            email=payload.admin_email,
+            role="school_admin",
+            school_id=sid,
+            position="Завуч",
+            password_hash=get_password_hash(payload.admin_password),
+        )
+        db.add(admin)
+        db.flush()
         db.add(models.SchoolAdmin(school_id=sid, user_id=admin.id))
 
     db.commit()
@@ -145,7 +129,7 @@ def get_school(
 ):
     s = db.get(models.School, school_id)
     if not s:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
+        raise HTTPException(404, "Школа не найдена")
     return school_out(db, s)
 
 
@@ -158,7 +142,7 @@ def patch_school(
 ):
     s = db.get(models.School, school_id)
     if not s:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
+        raise HTTPException(404, "Школа не найдена")
     data = payload.model_dump(exclude_unset=True)
     if "integrations" in data and data["integrations"] is not None:
         s.integration_pos = bool(data["integrations"].get("pos"))
@@ -180,7 +164,7 @@ def add_admin(
 ):
     s = db.get(models.School, school_id)
     if not s:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
+        raise HTTPException(404, "Школа не найдена")
     user = db.query(models.User).filter_by(email=payload.email).first()
     if not user:
         user = models.User(
@@ -190,11 +174,14 @@ def add_admin(
             role="school_admin",
             school_id=school_id,
             position="Завуч",
+            password_hash=get_password_hash(payload.password),
         )
         db.add(user)
         db.flush()
-    link = db.query(models.SchoolAdmin).filter_by(school_id=school_id, user_id=user.id).first()
-    if not link:
+    else:
+        user.password_hash = get_password_hash(payload.password)
+        user.role = "school_admin"
+    if not db.query(models.SchoolAdmin).filter_by(school_id=school_id, user_id=user.id).first():
         db.add(models.SchoolAdmin(school_id=school_id, user_id=user.id))
     db.commit()
     return school_out(db, s)
@@ -207,12 +194,9 @@ def remove_admin(
     db: Session = Depends(get_db),
     _: models.User = Depends(require_roles("platform_admin")),
 ):
-    s = db.get(models.School, school_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
     db.query(models.SchoolAdmin).filter_by(school_id=school_id, user_id=user_id).delete()
     db.commit()
-    return school_out(db, s)
+    return school_out(db, db.get(models.School, school_id))
 
 
 @router.post("/schools/{school_id}/access", response_model=SchoolOut)
@@ -224,7 +208,7 @@ def toggle_access(
 ):
     s = db.get(models.School, school_id)
     if not s:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
+        raise HTTPException(404, "Школа не найдена")
     s.access_enabled = payload.enabled
     db.commit()
     db.refresh(s)

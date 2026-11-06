@@ -1,35 +1,26 @@
 from app import models
-from app.auth import create_session_token
+from app.auth import create_session_token, verify_password
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
-from app.schemas import DemoUserOut, LoginInput, UserOut
-from app.serializers import teacher_with_classes_out, user_out
+from app.schemas import LoginInput, UserOut
+from app.serializers import user_out
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/demo-users", response_model=list[DemoUserOut])
-def demo_users(db: Session = Depends(get_db)):
-    users = db.query(models.User).all()
-    result = []
-    for u in users:
-        base = user_out(db, u)
-        if u.role == "teacher":
-            base = teacher_with_classes_out(db, u)
-        else:
-            base["classes"] = []
-        result.append(base)
-    return result
-
-
 @router.post("/login", response_model=UserOut)
 def login(payload: LoginInput, response: Response, db: Session = Depends(get_db)):
-    user = db.get(models.User, payload.user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    user = (
+        db.query(models.User)
+        .filter((models.User.email == payload.login) | (models.User.id == payload.login))
+        .first()
+    )
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
     token = create_session_token(user.id)
     response.set_cookie(
         key=settings.session_cookie,

@@ -26,9 +26,6 @@ def school_out(db: Session, s: models.School) -> dict:
         .filter(models.SchoolAdmin.school_id == s.id)
         .all()
     )
-    classes_count = db.query(models.SchoolClass).filter_by(school_id=s.id).count()
-    students_count = db.query(models.Student).filter_by(school_id=s.id).count()
-    teachers_count = db.query(models.User).filter_by(school_id=s.id, role="teacher").count()
     return {
         "id": s.id,
         "name": s.name,
@@ -44,10 +41,13 @@ def school_out(db: Session, s: models.School) -> dict:
         "created_at": s.created_at,
         "integrations": {"pos": s.integration_pos, "skud": s.integration_skud},
         "admin_ids": [a.id for a in admins],
-        "classes_count": classes_count,
-        "students_count": students_count,
-        "teachers_count": teachers_count,
-        "admins": [{"id": a.id, "full_name": a.full_name} for a in admins],
+        "classes_count": db.query(models.SchoolClass).filter_by(school_id=s.id).count(),
+        "students_count": db.query(models.Student).filter_by(school_id=s.id).count(),
+        "teachers_count": db.query(models.User).filter_by(school_id=s.id, role="teacher").count(),
+        "admins": [
+            {"id": a.id, "full_name": a.full_name, "role": a.role, "position": a.position}
+            for a in admins
+        ],
     }
 
 
@@ -59,21 +59,20 @@ def class_out(db: Session, cls: models.SchoolClass, date_q=None) -> dict:
         .all()
     )
     students = db.query(models.Student).filter_by(class_id=cls.id).all()
-    opt_outs = sum(1 for s in students if s.meal_status == "optOut")
-
     attendance_block = None
-    if date_q is not None:
+    if date_q:
         att = db.query(models.AttendanceRecord).filter_by(class_id=cls.id, date=date_q).first()
         if att:
-            absent_ids = set(att.absent_student_ids or [])
-            regular_ids = {s.id for s in students if s.meal_status == "regular"}
-            absent_count = len(absent_ids & regular_ids)
-            submitted_by = db.get(models.User, att.submitted_by_id)
+            absent = len(
+                set(att.absent_student_ids or [])
+                & {s.id for s in students if s.meal_status == "regular"}
+            )
+            sub = db.get(models.User, att.submitted_by_id)
             attendance_block = {
                 "status": "marked",
-                "absent_count": absent_count,
+                "absent_count": absent,
                 "submitted_at": att.submitted_at.strftime("%H:%M"),
-                "submitted_by_name": submitted_by.full_name if submitted_by else None,
+                "submitted_by_name": sub.full_name if sub else None,
             }
         else:
             attendance_block = {
@@ -82,7 +81,6 @@ def class_out(db: Session, cls: models.SchoolClass, date_q=None) -> dict:
                 "submitted_at": None,
                 "submitted_by_name": None,
             }
-
     return {
         "id": cls.id,
         "school_id": cls.school_id,
@@ -92,7 +90,7 @@ def class_out(db: Session, cls: models.SchoolClass, date_q=None) -> dict:
         "teacher_ids": [t.id for t in teachers],
         "teacher_names": [t.full_name for t in teachers],
         "students_count": len(students),
-        "opt_outs_count": opt_outs,
+        "opt_outs_count": sum(1 for s in students if s.meal_status == "optOut"),
         "attendance": attendance_block,
     }
 
@@ -119,21 +117,9 @@ def student_with_class_out(db: Session, s: models.Student) -> dict:
 def teacher_with_classes_out(db: Session, u: models.User) -> dict:
     out = user_out(db, u)
     rows = db.query(models.ClassTeacher).filter_by(teacher_id=u.id).all()
-    classes = []
-    for r in rows:
-        cls = db.get(models.SchoolClass, r.class_id)
-        if cls:
-            classes.append({"id": cls.id, "name": cls.name})
-    out["classes"] = classes
+    out["classes"] = [
+        {"id": c.id, "name": c.name}
+        for c in [db.get(models.SchoolClass, r.class_id) for r in rows]
+        if c
+    ]
     return out
-
-
-def canteen_category_out(c: models.CanteenCategory) -> dict:
-    return {
-        "id": c.id,
-        "school_id": c.school_id,
-        "name": c.name,
-        "share": c.share,
-        "avg_price": c.avg_price,
-        "unit": c.unit,
-    }

@@ -10,7 +10,6 @@ from app.schemas import (
     CanteenForecastOut,
     CanteenSalesDay,
 )
-from app.serializers import canteen_category_out
 from app.services.forecast import compute_canteen_forecast
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -28,12 +27,9 @@ def get_canteen_forecast(
     ensure_school_access(user, school_id)
     school = db.get(models.School, school_id)
     if not school:
-        raise HTTPException(status_code=404, detail="Школа не найдена")
+        raise HTTPException(404, "Школа не найдена")
     if school.meal_plan != "canteen":
-        raise HTTPException(
-            status_code=400,
-            detail="Прогноз по категориям доступен только для схемы «шведский стол»",
-        )
+        raise HTTPException(400, "Прогноз по категориям доступен только для схемы «шведский стол»")
     return compute_canteen_forecast(db, school, date)
 
 
@@ -48,25 +44,17 @@ def canteen_sales(
     since = date.today() - timedelta(days=days)
     sales = (
         db.query(models.CanteenSale)
-        .filter(
-            models.CanteenSale.school_id == school_id,
-            models.CanteenSale.date >= since,
-        )
+        .filter(models.CanteenSale.school_id == school_id, models.CanteenSale.date >= since)
         .order_by(models.CanteenSale.date.asc())
         .all()
     )
-    by_date: dict[date, dict] = {}
+
+    by_date = {}
     for s in sales:
         cat = db.get(models.CanteenCategory, s.category_id)
         day = by_date.setdefault(
             s.date,
-            {
-                "date": s.date,
-                "total_qty": 0,
-                "revenue": 0.0,
-                "waste_qty": 0,
-                "by_category": [],
-            },
+            {"date": s.date, "total_qty": 0, "revenue": 0.0, "waste_qty": 0, "by_category": []},
         )
         day["total_qty"] += s.qty
         day["revenue"] += s.revenue
@@ -80,6 +68,7 @@ def canteen_sales(
                 "waste_qty": s.waste_qty,
             }
         )
+
     return [by_date[d] for d in sorted(by_date.keys())]
 
 
@@ -90,14 +79,21 @@ def list_categories(
     user: models.User = Depends(require_roles("canteen", "school_admin")),
 ):
     ensure_school_access(user, school_id)
-    cats = db.query(models.CanteenCategory).filter_by(school_id=school_id).all()
-    return [canteen_category_out(c) for c in cats]
+    return [
+        {
+            "id": c.id,
+            "school_id": c.school_id,
+            "name": c.name,
+            "share": c.share,
+            "avg_price": c.avg_price,
+            "unit": c.unit,
+        }
+        for c in db.query(models.CanteenCategory).filter_by(school_id=school_id).all()
+    ]
 
 
 @router.post(
-    "/schools/{school_id}/canteen/categories",
-    response_model=CanteenCategoryOut,
-    status_code=201,
+    "/schools/{school_id}/canteen/categories", response_model=CanteenCategoryOut, status_code=201
 )
 def create_category(
     school_id: str,
@@ -107,7 +103,7 @@ def create_category(
 ):
     ensure_school_access(user, school_id)
     if not (0 <= payload.share <= 1):
-        raise HTTPException(status_code=400, detail="share должен быть в диапазоне 0..1")
+        raise HTTPException(400, "share должен быть в диапазоне 0..1")
     cid = f"cat-{school_id}-{db.query(models.CanteenCategory).filter_by(school_id=school_id).count() + 1}"
     cat = models.CanteenCategory(
         id=cid,
@@ -120,7 +116,14 @@ def create_category(
     db.add(cat)
     db.commit()
     db.refresh(cat)
-    return canteen_category_out(cat)
+    return {
+        "id": cat.id,
+        "school_id": cat.school_id,
+        "name": cat.name,
+        "share": cat.share,
+        "avg_price": cat.avg_price,
+        "unit": cat.unit,
+    }
 
 
 @router.patch("/canteen/categories/{category_id}", response_model=CanteenCategoryOut)
@@ -132,16 +135,23 @@ def patch_category(
 ):
     cat = db.get(models.CanteenCategory, category_id)
     if not cat:
-        raise HTTPException(status_code=404, detail="Категория не найдена")
+        raise HTTPException(404, "Категория не найдена")
     ensure_school_access(user, cat.school_id)
     data = payload.model_dump(exclude_unset=True)
     if "share" in data and not (0 <= data["share"] <= 1):
-        raise HTTPException(status_code=400, detail="share должен быть в диапазоне 0..1")
+        raise HTTPException(400, "share должен быть в диапазоне 0..1")
     for k, v in data.items():
         setattr(cat, k, v)
     db.commit()
     db.refresh(cat)
-    return canteen_category_out(cat)
+    return {
+        "id": cat.id,
+        "school_id": cat.school_id,
+        "name": cat.name,
+        "share": cat.share,
+        "avg_price": cat.avg_price,
+        "unit": cat.unit,
+    }
 
 
 @router.delete("/canteen/categories/{category_id}", status_code=204)
@@ -152,7 +162,7 @@ def delete_category(
 ):
     cat = db.get(models.CanteenCategory, category_id)
     if not cat:
-        raise HTTPException(status_code=404, detail="Категория не найдена")
+        raise HTTPException(404, "Категория не найдена")
     ensure_school_access(user, cat.school_id)
     db.query(models.CanteenSale).filter_by(category_id=category_id).delete()
     db.delete(cat)

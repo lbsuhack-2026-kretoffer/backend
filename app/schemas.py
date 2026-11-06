@@ -5,16 +5,13 @@ from pydantic.alias_generators import to_camel
 
 
 class BaseSchema(BaseModel):
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        from_attributes=True,
-    )
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, from_attributes=True)
 
 
-# ---- Auth ----
+# --- Auth ---
 class LoginInput(BaseSchema):
-    user_id: str
+    login: str
+    password: str
 
 
 class ClassRef(BaseSchema):
@@ -33,14 +30,16 @@ class UserOut(BaseSchema):
     avatar_url: str | None = None
 
 
-class DemoUserOut(UserOut):
+class TeacherWithClassesOut(UserOut):
     classes: list[ClassRef] = []
 
 
-# ---- School ----
+# --- School ---
 class AdminRef(BaseSchema):
     id: str
     full_name: str
+    role: str
+    position: str | None = None
 
 
 class Integrations(BaseSchema):
@@ -81,6 +80,7 @@ class SchoolCreateInput(BaseSchema):
     attendance_deadline: str = "09:15"
     admin_email: str | None = None
     admin_full_name: str | None = None
+    admin_password: str | None = None
 
 
 class SchoolPatchInput(BaseSchema):
@@ -100,15 +100,16 @@ class SchoolPatchInput(BaseSchema):
 class AddAdminInput(BaseSchema):
     email: str
     full_name: str
+    password: str
 
 
 class AccessToggleInput(BaseSchema):
     enabled: bool
 
 
-# ---- Class ----
+# --- Class & Student ---
 class AttendanceBlock(BaseSchema):
-    status: str  # marked | pending
+    status: str
     absent_count: int = 0
     submitted_at: str | None = None
     submitted_by_name: str | None = None
@@ -145,7 +146,6 @@ class AssignTeacherInput(BaseSchema):
     teacher_id: str
 
 
-# ---- Student ----
 class StudentOut(BaseSchema):
     id: str
     school_id: str
@@ -174,13 +174,10 @@ class TeacherCreateInput(BaseSchema):
     full_name: str
     email: str
     position: str | None = "Учитель"
+    password: str
 
 
-class TeacherWithClassesOut(UserOut):
-    classes: list[ClassRef] = []
-
-
-# ---- Attendance ----
+# --- Attendance ---
 class StudentMark(BaseSchema):
     id: str
     full_name: str
@@ -273,7 +270,7 @@ class AttendanceSummaryOut(BaseSchema):
     classes: list[AttendanceSummaryClass] = []
 
 
-# ---- Forecast ----
+# --- Forecast ---
 class AgeGroupRow(BaseSchema):
     age_group: str
     students: int
@@ -301,6 +298,8 @@ class ForecastOut(BaseSchema):
     absent: int
     present: int
     total_portions: int
+    adjustment_delta: int = 0
+    adjustment_reason: str | None = None
     by_age_group: list[AgeGroupRow] = []
     by_category: list[CategoryRow] = []
     marked_classes: int
@@ -326,6 +325,21 @@ class ForecastHistoryRow(BaseSchema):
     accuracy: float
     confidence: float
     buffer_percent: int
+
+
+class ForecastAdjustmentOut(BaseSchema):
+    id: str
+    school_id: str
+    date: date
+    delta: int
+    reason: str | None = None
+    created_by: str | None = None
+    created_at: datetime | None = None
+
+
+class AdjustmentInput(BaseSchema):
+    delta: int
+    reason: str | None = None
 
 
 class CanteenHistoryRow(BaseSchema):
@@ -372,7 +386,6 @@ class CanteenSalesDay(BaseSchema):
     by_category: list[CanteenSalesCategory] = []
 
 
-# ---- Canteen categories ----
 class CanteenCategoryOut(BaseSchema):
     id: str
     school_id: str
@@ -396,7 +409,7 @@ class CanteenCategoryPatch(BaseSchema):
     unit: str | None = None
 
 
-# ---- SKUD ----
+# --- SKUD ---
 class AccessEventOut(BaseSchema):
     id: str
     school_id: str
@@ -411,10 +424,10 @@ class AccessEventOut(BaseSchema):
 
 class ManualAccessInput(BaseSchema):
     student_id: str
-    type: str  # entry | exit
+    type: str
 
 
-# ---- Platform ----
+# --- Platform ---
 class PlatformAttendanceStats(BaseSchema):
     present: int
     absent: int

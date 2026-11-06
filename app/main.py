@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 
-from app import models  # noqa: F401 — регистрирует модели
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.routers import attendance, auth, canteen, forecast, platform, schools, skud
@@ -19,14 +18,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(
-    title="Школьный Баланс-Пит API",
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
+app = FastAPI(title="Школьный Баланс-Пит API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

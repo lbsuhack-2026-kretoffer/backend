@@ -20,6 +20,7 @@ class User(Base):
     id = Column(String, primary_key=True)
     full_name = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
     role = Column(String, nullable=False)
     school_id = Column(String, ForeignKey("schools.id"), nullable=True)
     position = Column(String, nullable=True)
@@ -39,7 +40,7 @@ class School(Base):
     timezone = Column(String, default="Europe/Minsk")
     buffer_percent = Column(Integer, default=8)
     attendance_deadline = Column(String, default="09:15")
-    access_enabled = Column(Boolean, default=False)
+    access_enabled = Column(Boolean, default=True)
     integration_pos = Column(Boolean, default=False)
     integration_skud = Column(Boolean, default=False)
     created_at = Column(Date, nullable=False, default=date.today)
@@ -99,6 +100,18 @@ class ForecastApproval(Base):
     __table_args__ = (UniqueConstraint("school_id", "date", name="uq_approval_school_date"),)
 
 
+class ForecastAdjustment(Base):
+    __tablename__ = "forecast_adjustments"
+    id = Column(String, primary_key=True)
+    school_id = Column(String, ForeignKey("schools.id"), nullable=False)
+    date = Column(Date, nullable=False)
+    delta = Column(Integer, nullable=False)
+    reason = Column(String, nullable=True)
+    created_by_id = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("school_id", "date", name="uq_adjustment_school_date"),)
+
+
 class CanteenCategory(Base):
     __tablename__ = "canteen_categories"
     id = Column(String, primary_key=True)
@@ -118,9 +131,6 @@ class CanteenSale(Base):
     qty = Column(Integer, nullable=False)
     revenue = Column(Float, nullable=False)
     waste_qty = Column(Integer, default=0)
-    __table_args__ = (
-        UniqueConstraint("school_id", "date", "category_id", name="uq_sale_school_date_cat"),
-    )
 
 
 class AccessEvent(Base):
@@ -128,8 +138,8 @@ class AccessEvent(Base):
     id = Column(String, primary_key=True)
     school_id = Column(String, ForeignKey("schools.id"), nullable=False)
     student_id = Column(String, ForeignKey("students.id"), nullable=False)
-    type = Column(String, nullable=False)  # entry | exit
-    source = Column(String, nullable=False)  # turnstile | manual
+    type = Column(String, nullable=False)
+    source = Column(String, nullable=False)
     date = Column(Date, nullable=False)
-    time = Column(String, nullable=False)  # "08:47"
+    time = Column(String, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

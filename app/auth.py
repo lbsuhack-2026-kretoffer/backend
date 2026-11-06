@@ -1,7 +1,17 @@
 from app.config import settings
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from passlib.context import CryptContext
 
 _serializer = URLSafeTimedSerializer(settings.secret_key, salt="session")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
 
 
 def create_session_token(user_id: str) -> str:
