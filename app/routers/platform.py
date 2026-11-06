@@ -302,7 +302,6 @@ def remove_admin(school_id: str, user_id: str, db: DB):
         SchoolAdmin.school_id == school.id,
         SchoolAdmin.user_id == user.id,
     ).delete()
-    db.delete(user)
     db.commit()
     db.refresh(school)
     return school_to_out(school, db)

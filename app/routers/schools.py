@@ -1,8 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ..deps import DB, CurrentUser, ensure_school_access
-from ..models import Attendance, School, SchoolClass, Student, User
-from ..schemas import SchoolOut, SchoolPatch
+from ..models import Attendance, ClassTeacher, School, SchoolClass, Student, User
+from ..schemas import (
+    ClassInput,
+    SchoolOut,
+    SchoolPatch,
+    TeacherInput,
+)
 from ..utils import parse_date, str_to_ids
 from .platform import school_to_out
 
@@ -50,9 +55,9 @@ def patch_school(school_id: str, data: SchoolPatch, db: DB, user: CurrentUser):
 
 
 @router.get("/{school_id}/classes")
-def list_classes(school_id: str, db: DB, user: CurrentUser, date_: str | None = None):
+def list_classes(school_id: str, db: DB, user: CurrentUser, date: str | None = None):
     ensure_school_access(user, school_id)
-    target = parse_date(date_)
+    target = parse_date(date)
     classes = (
         db.query(SchoolClass)
         .filter(SchoolClass.school_id == school_id)
@@ -111,26 +116,23 @@ def list_classes(school_id: str, db: DB, user: CurrentUser, date_: str | None = 
 
 
 @router.post("/{school_id}/classes", status_code=201)
-def create_class(school_id: str, data: dict, db: DB, user: CurrentUser):
+def create_class(school_id: str, data: ClassInput, db: DB, user: CurrentUser):
     ensure_school_access(user, school_id)
     if user.role not in ("platform_admin", "school_admin"):
         raise HTTPException(403, "Недостаточно прав")
-    grade = int(data.get("grade", 1))
-    age_group = data.get("ageGroup") or (
-        "junior" if grade <= 4 else "middle" if grade <= 9 else "senior"
+    age_group = data.ageGroup or (
+        "junior" if data.grade <= 4 else "middle" if data.grade <= 9 else "senior"
     )
     klass = SchoolClass(
         school_id=school_id,
-        name=data["name"],
-        grade=grade,
+        name=data.name,
+        grade=data.grade,
         age_group=age_group,
     )
     db.add(klass)
     db.flush()
-    if data.get("teacherId"):
-        from ..models import ClassTeacher
-
-        db.add(ClassTeacher(class_id=klass.id, teacher_id=data["teacherId"]))
+    if data.teacherId:
+        db.add(ClassTeacher(class_id=klass.id, teacher_id=data.teacherId))
     db.commit()
     db.refresh(klass)
     return {
@@ -139,7 +141,7 @@ def create_class(school_id: str, data: dict, db: DB, user: CurrentUser):
         "name": klass.name,
         "grade": klass.grade,
         "ageGroup": klass.age_group,
-        "teacherIds": [],
+        "teacherIds": [data.teacherId] if data.teacherId else [],
         "teacherNames": [],
         "studentsCount": 0,
         "optOutsCount": 0,
@@ -176,32 +178,31 @@ def list_teachers(school_id: str, db: DB, user: CurrentUser):
 
 
 @router.post("/{school_id}/teachers", status_code=201)
-def create_teacher(school_id: str, data: dict, db: DB, user: CurrentUser):
+def create_teacher(school_id: str, data: TeacherInput, db: DB, user: CurrentUser):
     ensure_school_access(user, school_id)
     if user.role not in ("platform_admin", "school_admin"):
         raise HTTPException(403, "Недостаточно прав")
 
     from ..security import hash_password
 
-    email = data["email"]
-    if db.query(User).filter(User.email == email).first():
+    if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(409, "Пользователь с таким e-mail уже существует")
 
     # роль: явное поле role, иначе — по position (вахта/охрана → guard)
-    role = data.get("role")
+    role = data.role
     if role is None:
-        position = (data.get("position") or "").lower()
+        position = (data.position or "").lower()
         role = "guard" if ("охран" in position or "вахт" in position) else "teacher"
     if role not in ("teacher", "guard"):
         raise HTTPException(400, "Недопустимая роль")
 
     t = User(
-        full_name=data["fullName"],
-        email=email,
-        password_hash=hash_password(data["password"]),
+        full_name=data.fullName,
+        email=data.email,
+        password_hash=hash_password(data.password),
         role=role,
         school_id=school_id,
-        position=data.get("position"),
+        position=data.position,
     )
     db.add(t)
     db.commit()
@@ -223,7 +224,7 @@ def search_students(
     db: DB,
     user: CurrentUser,
     query: str | None = None,
-    search_by: str = "surname",
+    search_by: str = Query("surname", alias="searchBy"),
 ):
     ensure_school_access(user, school_id)
     q = db.query(Student).filter(Student.school_id == school_id)

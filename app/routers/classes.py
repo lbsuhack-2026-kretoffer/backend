@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..deps import DB, CurrentUser, ensure_school_access
 from ..models import Attendance, ClassTeacher, SchoolClass, Student, User
+from ..schemas import ClassPatch, StudentInput, TeacherAssign
 from ..utils import parse_date, str_to_ids
 
 router = APIRouter(prefix="/classes", tags=["classes"])
@@ -53,17 +54,20 @@ def get_class(class_id: str, db: DB, user: CurrentUser, date: str | None = None)
 
 
 @router.patch("/{class_id}")
-def patch_class(class_id: str, data: dict, db: DB, user: CurrentUser):
+def patch_class(class_id: str, data: ClassPatch, db: DB, user: CurrentUser):
     c = _get_class(db, class_id)
     ensure_school_access(user, c.school_id)
     if user.role not in ("platform_admin", "school_admin"):
         raise HTTPException(403, "Недостаточно прав")
-    for key, attr in (("name", "name"), ("grade", "grade"), ("ageGroup", "age_group")):
-        if key in data and data[key] is not None:
-            setattr(c, attr, data[key])
-    if data.get("teacherId") is not None:
+    if data.name is not None:
+        c.name = data.name
+    if data.grade is not None:
+        c.grade = data.grade
+    if data.ageGroup is not None:
+        c.age_group = data.ageGroup
+    if data.teacherId is not None:
         db.query(ClassTeacher).filter(ClassTeacher.class_id == c.id).delete()
-        db.add(ClassTeacher(class_id=c.id, teacher_id=data["teacherId"]))
+        db.add(ClassTeacher(class_id=c.id, teacher_id=data.teacherId))
     db.commit()
     db.refresh(c)
     return get_class(class_id, db, user)
@@ -101,7 +105,7 @@ def list_students(class_id: str, db: DB, user: CurrentUser):
 
 
 @router.post("/{class_id}/students", status_code=201)
-def add_student(class_id: str, data: dict, db: DB, user: CurrentUser):
+def add_student(class_id: str, data: StudentInput, db: DB, user: CurrentUser):
     c = _get_class(db, class_id)
     ensure_school_access(user, c.school_id)
     if user.role not in ("platform_admin", "school_admin"):
@@ -109,8 +113,8 @@ def add_student(class_id: str, data: dict, db: DB, user: CurrentUser):
     s = Student(
         school_id=c.school_id,
         class_id=c.id,
-        full_name=data["fullName"],
-        meal_status=data.get("mealStatus", "regular"),
+        full_name=data.fullName,
+        meal_status=data.mealStatus,
         age_group=c.age_group,
     )
     db.add(s)
@@ -129,12 +133,12 @@ def add_student(class_id: str, data: dict, db: DB, user: CurrentUser):
 
 
 @router.post("/{class_id}/teacher")
-def set_teacher(class_id: str, data: dict, db: DB, user: CurrentUser):
+def set_teacher(class_id: str, data: TeacherAssign, db: DB, user: CurrentUser):
     c = _get_class(db, class_id)
     ensure_school_access(user, c.school_id)
     if user.role not in ("platform_admin", "school_admin"):
         raise HTTPException(403, "Недостаточно прав")
-    t = db.get(User, data["teacherId"])
+    t = db.get(User, data.teacherId)
     if not t or t.school_id != c.school_id or t.role != "teacher":
         raise HTTPException(400, "Учитель не найден в этой школе")
     if (

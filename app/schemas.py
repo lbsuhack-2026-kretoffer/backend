@@ -156,7 +156,7 @@ class TeacherInput(BaseModel):
     email: EmailStr
     position: str | None = None
     password: str = Field(min_length=4)
-    role: Literal["teacher", "guard"] = "teacher"
+    role: Literal["teacher", "guard"] | None = None
 
 
 # ---- Attendance

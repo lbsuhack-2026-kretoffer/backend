@@ -16,12 +16,7 @@ def _is_uuid(value: str) -> bool:
 
 def authenticate_user(db: Session, login: str, password: str) -> User | None:
     login = login.strip()
-    q = db.query(User)
-    if _is_uuid(login):
-        q = q.filter((User.email == login) | (User.id == login))
-    else:
-        q = q.filter(User.email == login)
-    user = q.first()
+    user = db.query(User).filter((User.email == login) | (User.id == login)).first()
     if not user or not verify_password(password, user.password_hash):
         return None
     return user

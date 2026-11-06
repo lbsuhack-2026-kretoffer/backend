@@ -4,11 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/school_balance"
     secret_key: str = "change-me-in-prod"
-    session_cookie: str = "sbp_session"
+    session_cookie: str = "sb_session"
     cookie_secure: bool = False
     frontend_origins: str = "http://localhost:5173,http://localhost:8080"
     superadmin_email: str = "admin@school-balance.by"
-    superadmin_password: str = "admin12345"
+    superadmin_password: str = "changeme123"
     superadmin_name: str = "Платформенный администратор"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
