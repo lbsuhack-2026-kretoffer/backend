@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
+ignore = ["E501", "RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pydantic-схемы намеренно в camelCase — это контракт с фронтендом (api.md)
+"app/schemas.py" = ["N815"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
